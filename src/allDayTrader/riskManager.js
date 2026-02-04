@@ -151,8 +151,13 @@ export class RiskManager {
     }
 
     // Apply min/max bet size
+    // Max bet is calculated dynamically based on balance: balance * betScaleFactor
+    const balance = this.sessionState.balance;
+    const dynamicMaxBet = balance * this.config.betScaleFactor;
+    const maxBetSize = Math.max(this.config.minBetSize, dynamicMaxBet);
+
     adjustedSize = Math.max(this.config.minBetSize, adjustedSize);
-    adjustedSize = Math.min(this.config.maxBetSize, adjustedSize);
+    adjustedSize = Math.min(maxBetSize, adjustedSize);
 
     // Final check - don't trade if size is below minimum
     if (adjustedSize < this.config.minBetSize) {

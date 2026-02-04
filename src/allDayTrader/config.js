@@ -46,27 +46,27 @@ export const ALL_DAY_CONFIG = {
   // ============================================
   regimeRouting: {
     TREND_UP: {
-      enabled: ['MOMENTUM', 'MACD', 'VOLATILITY_BREAKOUT', 'TREND_CONFIRM', 'VOLUME_PROFILE'],
-      disabled: ['MEAN_REVERSION'],
-      confidenceBoost: { MOMENTUM: 0.05, TREND_CONFIRM: 0.05 },
+      enabled: ['MOMENTUM', 'MACD', 'VOLATILITY_BREAKOUT', 'TREND_CONFIRM', 'VOLUME_PROFILE', 'EMA_CROSS', 'ORB'],
+      disabled: ['MEAN_REVERSION', 'LIQ_SWEEP'],
+      confidenceBoost: { MOMENTUM: 0.05, TREND_CONFIRM: 0.05, EMA_CROSS: 0.05 },
       sizeMultiplier: 1.0
     },
     TREND_DOWN: {
-      enabled: ['MOMENTUM', 'MACD', 'VOLATILITY_BREAKOUT', 'TREND_CONFIRM', 'VOLUME_PROFILE'],
-      disabled: ['MEAN_REVERSION'],
-      confidenceBoost: { MOMENTUM: 0.05, TREND_CONFIRM: 0.05 },
+      enabled: ['MOMENTUM', 'MACD', 'VOLATILITY_BREAKOUT', 'TREND_CONFIRM', 'VOLUME_PROFILE', 'EMA_CROSS', 'ORB'],
+      disabled: ['MEAN_REVERSION', 'LIQ_SWEEP'],
+      confidenceBoost: { MOMENTUM: 0.05, TREND_CONFIRM: 0.05, EMA_CROSS: 0.05 },
       sizeMultiplier: 1.0
     },
     RANGE: {
-      enabled: ['MEAN_REVERSION', 'RSI', 'MACD', 'PRICE_ACTION', 'VOLUME_PROFILE'],
-      disabled: ['MOMENTUM', 'TREND_CONFIRM'],
-      confidenceBoost: { MEAN_REVERSION: 0.05, PRICE_ACTION: 0.03 },
+      enabled: ['MEAN_REVERSION', 'RSI', 'MACD', 'PRICE_ACTION', 'VOLUME_PROFILE', 'SR_FLIP', 'LIQ_SWEEP'],
+      disabled: ['MOMENTUM', 'TREND_CONFIRM', 'EMA_CROSS'],
+      confidenceBoost: { MEAN_REVERSION: 0.05, PRICE_ACTION: 0.03, SR_FLIP: 0.05, LIQ_SWEEP: 0.05 },
       sizeMultiplier: 1.0
     },
     CHOP: {
-      enabled: ['RSI', 'PRICE_ACTION'],
-      disabled: ['MOMENTUM', 'VOLATILITY_BREAKOUT', 'MEAN_REVERSION', 'TREND_CONFIRM'],
-      confidenceBoost: {},
+      enabled: ['RSI', 'PRICE_ACTION', 'LIQ_SWEEP'],
+      disabled: ['MOMENTUM', 'VOLATILITY_BREAKOUT', 'MEAN_REVERSION', 'TREND_CONFIRM', 'EMA_CROSS', 'ORB'],
+      confidenceBoost: { LIQ_SWEEP: 0.03 },
       sizeMultiplier: 0.5 // Reduce size in choppy markets
     }
   },
@@ -124,11 +124,14 @@ export const ALL_DAY_CONFIG = {
     // Position limits
     maxSinglePosition: 0.15, // 15% of balance per position
     maxTotalExposure: 0.50,  // 50% max in active positions
-    maxPositionsPerMarket: 2, // Max positions per 15-min market
+    maxPositionsPerMarket: 1, // Only 1 position per 15-min market (no conflicting bets)
 
-    // Bet sizing
+    // Dynamic bet sizing based on balance
+    // Max bet scales with balance: $500 -> $35, $700 -> $60, etc.
     minBetSize: 5,   // Minimum bet size in dollars
-    maxBetSize: 50,  // Maximum bet size in dollars
+    baseBetSize: 35, // Base max bet at $500 balance
+    baseBalance: 500, // Reference balance for scaling
+    betScaleFactor: 0.07, // Max bet = balance * scaleFactor (7% of balance)
 
     // Kelly fraction for sizing (0.5 = half Kelly)
     kellyFraction: 0.5,
@@ -213,6 +216,7 @@ export const ALL_DAY_CONFIG = {
 
 // Strategy metadata - defines which regimes each strategy is designed for
 export const STRATEGY_METADATA = {
+  // Original core strategies
   MOMENTUM: {
     description: 'Trend-following with EMA cascade',
     regimeCompatibility: ['TREND_UP', 'TREND_DOWN'],
@@ -243,6 +247,7 @@ export const STRATEGY_METADATA = {
     timeframePreference: 'any',
     riskLevel: 'medium'
   },
+  // Pattern-based strategies
   TREND_CONFIRM: {
     description: 'High-confidence trend following with EMA+VWAP+momentum',
     regimeCompatibility: ['TREND_UP', 'TREND_DOWN'],
@@ -260,6 +265,31 @@ export const STRATEGY_METADATA = {
     regimeCompatibility: ['TREND_UP', 'TREND_DOWN', 'RANGE'],
     timeframePreference: 'any',
     riskLevel: 'medium'
+  },
+  // 15-minute specific strategies
+  ORB: {
+    description: 'Opening Range Breakout with volume confirmation',
+    regimeCompatibility: ['TREND_UP', 'TREND_DOWN', 'RANGE'],
+    timeframePreference: 'shorter',
+    riskLevel: 'medium'
+  },
+  EMA_CROSS: {
+    description: 'EMA 5/20 crossover with price confirmation',
+    regimeCompatibility: ['TREND_UP', 'TREND_DOWN'],
+    timeframePreference: 'any',
+    riskLevel: 'low'
+  },
+  SR_FLIP: {
+    description: 'Support/Resistance flip with RSI confirmation',
+    regimeCompatibility: ['TREND_UP', 'TREND_DOWN', 'RANGE'],
+    timeframePreference: 'any',
+    riskLevel: 'medium'
+  },
+  LIQ_SWEEP: {
+    description: 'Liquidity sweep false breakout reversals',
+    regimeCompatibility: ['RANGE', 'TREND_UP', 'TREND_DOWN'],
+    timeframePreference: 'shorter',
+    riskLevel: 'high'
   }
 };
 

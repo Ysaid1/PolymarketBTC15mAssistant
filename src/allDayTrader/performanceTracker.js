@@ -14,10 +14,16 @@ export class PerformanceTracker {
     // Trade history per strategy
     this.strategyHistory = {};
 
-    // Initialize for known strategies (original 5 + new 3)
+    // Initialize for all 12 strategies + aggregated
     const strategies = [
+      // Original 5 core
       'MOMENTUM', 'MEAN_REVERSION', 'VOLATILITY_BREAKOUT', 'RSI', 'MACD',
-      'TREND_CONFIRM', 'PRICE_ACTION', 'VOLUME_PROFILE', 'AGGREGATED'
+      // Pattern-based
+      'TREND_CONFIRM', 'PRICE_ACTION', 'VOLUME_PROFILE',
+      // 15-min specific strategies
+      'ORB', 'EMA_CROSS', 'SR_FLIP', 'LIQ_SWEEP',
+      // Aggregated
+      'AGGREGATED'
     ];
     for (const name of strategies) {
       this.strategyHistory[name] = {

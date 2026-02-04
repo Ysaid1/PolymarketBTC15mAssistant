@@ -269,16 +269,32 @@ export class PositionManager {
       return { canEnter: false, reason: 'risk_limit' };
     }
 
-    // Check if we already have a position in this direction for current market
-    const existingSameDirection = this.engine.positions.filter(
-      p => p.side === signal.side && p.marketId === signal.marketId
+    // Check if we already have ANY position for this market (prevent conflicting bets)
+    const existingForMarket = this.engine.positions.filter(
+      p => p.marketId === signal.marketId
     );
 
-    if (existingSameDirection.length >= ALL_DAY_CONFIG.risk.maxPositionsPerMarket) {
+    if (existingForMarket.length >= ALL_DAY_CONFIG.risk.maxPositionsPerMarket) {
       return { canEnter: false, reason: 'max_positions_per_market' };
     }
 
+    // Check if we'd be betting against an existing position (conflicting)
+    const conflicting = existingForMarket.some(p => p.side !== signal.side);
+    if (conflicting) {
+      return { canEnter: false, reason: 'conflicting_position' };
+    }
+
     return { canEnter: true };
+  }
+
+  /**
+   * Calculate dynamic max bet size based on current balance
+   * At $500: max ~$35, at $700: max ~$49, at $1000: max ~$70
+   */
+  calculateDynamicMaxBet(balance) {
+    const { minBetSize, betScaleFactor } = ALL_DAY_CONFIG.risk;
+    const dynamicMax = balance * betScaleFactor;
+    return Math.max(minBetSize, dynamicMax);
   }
 
   /**
@@ -291,9 +307,15 @@ export class PositionManager {
       signal.signals?.[0]?.strategyName || 'AGGREGATED'
     );
 
+    // Calculate dynamic max bet based on current balance
+    const dynamicMaxBet = this.calculateDynamicMaxBet(this.engine.balance);
+
+    // Cap the bet size to dynamic max
+    const cappedBetSize = Math.min(betSize, dynamicMaxBet);
+
     // Apply risk manager adjustments
     const adjustedSize = riskManager.adjustPositionSize(
-      betSize,
+      cappedBetSize,
       signal,
       this.engine.positions
     );
@@ -314,7 +336,8 @@ export class PositionManager {
       size: adjustedSize,
       entryPrice,
       riskPercent,
-      marketPrice
+      marketPrice,
+      dynamicMaxBet
     };
   }
 

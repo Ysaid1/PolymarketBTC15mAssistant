@@ -149,11 +149,12 @@ export class PaperTradingOrchestrator {
       this.lastRsiSlope = rsiSeries.length >= 5 ? slopeLast(rsiSeries, 5) : 0;
 
       this.lastMacd = computeMacd(closes, 12, 26, 9);
-      this.lastRegime = detectRegime({
+      const regimeResult = detectRegime({
         price: this.lastPrice,
         vwap: this.lastVwap,
         vwapSlope: this.lastVwapSlope
       });
+      this.lastRegime = regimeResult?.regime || 'RANGE';
 
       return true;
     } catch (error) {

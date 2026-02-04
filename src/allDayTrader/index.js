@@ -33,7 +33,18 @@ import { MACDStrategy } from '../paperTrading/strategies/macdStrategy.js';
 import { TrendConfirmationStrategy } from '../paperTrading/strategies/trendConfirmationStrategy.js';
 import { PriceActionStrategy } from '../paperTrading/strategies/priceActionStrategy.js';
 import { VolumeProfileStrategy } from '../paperTrading/strategies/volumeProfileStrategy.js';
+// New strategies
+import { ORBStrategy } from '../paperTrading/strategies/orbStrategy.js';
+import { EMACrossoverStrategy } from '../paperTrading/strategies/emaCrossoverStrategy.js';
+import { SRFlipStrategy } from '../paperTrading/strategies/srFlipStrategy.js';
+import { LiquiditySweepStrategy } from '../paperTrading/strategies/liquiditySweepStrategy.js';
 import { CSVLogger } from '../paperTrading/csvLogger.js';
+
+// 4H Trend Context
+import { HigherTimeframeContext } from './higherTimeframeContext.js';
+
+// Strategy Tracker for independent strategy testing
+import { StrategyTracker } from './strategyTracker.js';
 
 // Import data fetchers
 import {
@@ -97,24 +108,42 @@ class AllDayTrader {
     this.positionManager = new PositionManager(this.engine);
     this.riskManager = new RiskManager(this.sessionState);
     this.microstructure = new MicrostructureAnalyzer();
+    this.htfContext = new HigherTimeframeContext();
 
-    // Strategies
-    // 8 strategies for signal aggregation
+    // Strategies - 12 total for comprehensive signal aggregation
     this.strategies = [
-      // Original 5
+      // Original 5 core strategies
       new MomentumStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
       new MeanReversionStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
       new VolatilityBreakoutStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
       new RSIStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
       new MACDStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      // New 3
+      // Pattern-based strategies
       new TrendConfirmationStrategy({ minConfidence: 0.60 }), // Higher threshold
       new PriceActionStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new VolumeProfileStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence })
+      new VolumeProfileStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
+      // New 15-min specific strategies
+      new ORBStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
+      new EMACrossoverStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
+      new SRFlipStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
+      new LiquiditySweepStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence })
     ];
 
     // Logger
     this.logger = new CSVLogger({ sessionId: `allday_${Date.now().toString(36)}` });
+
+    // Strategy Tracker - each strategy gets $500 independently
+    this.strategyTracker = new StrategyTracker({
+      initialBalance: 500,
+      sessionId: Date.now()
+    });
+
+    // Initialize all strategies in the tracker
+    for (const strategy of this.strategies) {
+      this.strategyTracker.initStrategy(strategy.name);
+    }
+    // Also track aggregated
+    this.strategyTracker.initStrategy('AGGREGATED');
 
     // Configuration
     this.pollInterval = pollInterval;
@@ -129,11 +158,13 @@ class AllDayTrader {
     // Data cache
     this.candles1m = [];
     this.candles5m = [];
+    this.candles4h = [];
     this.lastPrice = null;
     this.lastVwap = null;
     this.lastRsi = null;
     this.lastMacd = null;
     this.lastRegime = null;
+    this.lastHtfUpdate = 0;
   }
 
   /**
@@ -141,6 +172,7 @@ class AllDayTrader {
    */
   async fetchData() {
     try {
+      // Fetch 1m and 5m candles every iteration
       const [klines1m, klines5m] = await Promise.all([
         fetchBinanceKlines('BTCUSDT', '1m', 240),
         fetchBinanceKlines('BTCUSDT', '5m', 200)
@@ -149,6 +181,18 @@ class AllDayTrader {
       this.candles1m = klines1m;
       this.candles5m = klines5m;
       this.lastPrice = await fetchBinanceLastPrice('BTCUSDT');
+
+      // Fetch 4H candles less frequently (every 5 minutes)
+      const now = Date.now();
+      if (now - this.lastHtfUpdate > 5 * 60 * 1000) {
+        try {
+          this.candles4h = await fetchBinanceKlines('BTCUSDT', '4h', 100);
+          this.htfContext.analyze(this.candles4h);
+          this.lastHtfUpdate = now;
+        } catch (err) {
+          console.error(`${colors.yellow}4H data fetch failed: ${err.message}${colors.reset}`);
+        }
+      }
 
       // Calculate indicators
       const closes = this.candles1m.map(c => c.close);
@@ -166,11 +210,12 @@ class AllDayTrader {
       this.lastRsiSlope = rsiSeries.length >= 5 ? slopeLast(rsiSeries, 5) : 0;
 
       this.lastMacd = computeMacd(closes, 12, 26, 9);
-      this.lastRegime = detectRegime({
+      const regimeResult = detectRegime({
         price: this.lastPrice,
         vwap: this.lastVwap,
         vwapSlope: this.lastVwapSlope
       });
+      this.lastRegime = regimeResult?.regime || 'RANGE';
 
       return true;
     } catch (error) {
@@ -202,7 +247,9 @@ class AllDayTrader {
       }
 
       // Check if market changed
-      if (this.currentMarket?.id !== market.id) {
+      const isNewMarket = this.currentMarket?.id !== market.id;
+
+      if (isNewMarket) {
         if (this.currentMarket) {
           await this.resolveMarket(this.currentMarket);
         }
@@ -226,6 +273,12 @@ class AllDayTrader {
           console.log(`${colors.yellow}End Time: Unknown (estimating from detection time)${colors.reset}`);
         }
         console.log(`Regime: ${colors.yellow}${this.lastRegime}${colors.reset}`);
+
+        // Debug: log market structure on new market
+        console.log(`${colors.dim}[DEBUG] Market fields: ${Object.keys(market).join(', ')}${colors.reset}`);
+        if (market.outcomePrices) {
+          console.log(`${colors.dim}[DEBUG] outcomePrices: ${JSON.stringify(market.outcomePrices)}${colors.reset}`);
+        }
       } else {
         // Same market - update end time if available
         if (marketEndTime) {
@@ -233,17 +286,55 @@ class AllDayTrader {
         }
       }
 
-      // Fetch order book
-      const yesTokenId = market.clobTokenIds?.[0] || market.tokens?.[0]?.token_id;
-      if (yesTokenId) {
+      // Try to get prices from market data first
+      // outcomePrices can be a JSON string like "[\"0.045\", \"0.955\"]" or an array
+      let outcomePrices = market.outcomePrices;
+
+      // Parse if it's a JSON string
+      if (typeof outcomePrices === 'string') {
         try {
-          const orderbook = await fetchPolymarketOrderBook(yesTokenId);
-          market.orderbook = this.summarizeOrderBook(orderbook);
-          market.yesPrice = market.orderbook.bestBid || 0.50;
-          market.noPrice = market.orderbook.bestAsk ? (1 - market.orderbook.bestAsk) : 0.50;
-        } catch {
-          market.yesPrice = 0.50;
-          market.noPrice = 0.50;
+          outcomePrices = JSON.parse(outcomePrices);
+        } catch (e) {
+          outcomePrices = null;
+        }
+      }
+
+      if (outcomePrices && Array.isArray(outcomePrices) && outcomePrices.length >= 2) {
+        market.yesPrice = parseFloat(outcomePrices[0]) || 0.50;
+        market.noPrice = parseFloat(outcomePrices[1]) || 0.50;
+
+        if (isNewMarket) {
+          console.log(`${colors.green}[PRICES] YES: ${(market.yesPrice * 100).toFixed(0)}c, NO: ${(market.noPrice * 100).toFixed(0)}c${colors.reset}`);
+        }
+      } else {
+        // Fallback: try orderbook API
+        const yesTokenId = market.clobTokenIds?.[0] || market.tokens?.[0]?.token_id;
+        const noTokenId = market.clobTokenIds?.[1] || market.tokens?.[1]?.token_id;
+
+        // Fetch YES orderbook
+        if (yesTokenId) {
+          try {
+            const yesOrderbook = await fetchPolymarketOrderBook(yesTokenId);
+            market.orderbook = this.summarizeOrderBook(yesOrderbook);
+            market.yesPrice = market.orderbook.bestBid || 0.50;
+          } catch (err) {
+            // Silently fall back to 0.50
+            market.yesPrice = 0.50;
+          }
+        }
+
+        // Fetch NO orderbook separately
+        if (noTokenId) {
+          try {
+            const noOrderbook = await fetchPolymarketOrderBook(noTokenId);
+            market.noOrderbook = this.summarizeOrderBook(noOrderbook);
+            market.noPrice = market.noOrderbook.bestBid || 0.50;
+          } catch (err) {
+            // Fallback: derive from YES price
+            market.noPrice = market.yesPrice ? (1 - market.yesPrice) : 0.50;
+          }
+        } else {
+          market.noPrice = market.yesPrice ? (1 - market.yesPrice) : 0.50;
         }
       }
 
@@ -352,27 +443,44 @@ class AllDayTrader {
     console.log(`Start: $${this.priceAtStart.toFixed(2)} → End: $${endPrice.toFixed(2)}`);
     console.log(`Outcome: ${outcome === 'UP' ? colors.green : colors.red}${outcome}${colors.reset}`);
 
-    const results = this.engine.closeAllForMarket(market.id, outcome, outcome === 'UP' ? 1 : 0);
+    // Close all strategy tracker positions
+    const strategyResults = this.strategyTracker.closeAllForMarket(market.id, outcome, endPrice);
 
-    for (const result of results) {
+    let wins = 0;
+    let losses = 0;
+
+    console.log(`\n${colors.cyan}Strategy Results:${colors.reset}`);
+    for (const result of strategyResults) {
       if (result.success) {
-        const trade = result.trade;
         const pnlColor = result.won ? colors.green : colors.red;
+        console.log(`  ${result.strategyName.padEnd(20)} | ${result.trade.side} → ${pnlColor}${formatUSD(result.pnl)}${colors.reset} | Bal: $${result.newBalance.toFixed(0)}`);
 
-        console.log(`  ${trade.strategyName}: ${trade.side} → ${pnlColor}${formatUSD(result.pnl)}${colors.reset}`);
+        if (result.won) wins++;
+        else losses++;
 
-        // Record for tracking
-        this.sessionState.recordTrade(trade);
+        // Record for performance tracking
         this.performanceTracker.recordOutcome(
-          trade.strategyName,
+          result.strategyName,
           result.won,
           result.pnl,
           this.lastRegime
         );
-
-        this.logger.logTrade(trade, this.engine.balance);
       }
     }
+
+    console.log(`\n  Total: ${colors.green}${wins} wins${colors.reset} / ${colors.red}${losses} losses${colors.reset}`);
+
+    // Also close old engine positions (legacy)
+    const results = this.engine.closeAllForMarket(market.id, outcome, outcome === 'UP' ? 1 : 0);
+    for (const result of results) {
+      if (result.success) {
+        this.sessionState.recordTrade(result.trade);
+        this.logger.logTrade(result.trade, this.engine.balance);
+      }
+    }
+
+    // Write summary CSV
+    this.strategyTracker.writeSummaryCSV();
   }
 
   /**
@@ -440,88 +548,100 @@ class AllDayTrader {
       remainingMinutes
     };
 
-    // 5. Get aggregated signal
+    // Get 4H trend info
+    const htf = this.htfContext.getCachedAnalysis();
+    const htfTrend = htf.trend || 'UNKNOWN';
+
+    // Market data for entries
+    const yesPrice = this.currentMarket?.yesPrice || 0.50;
+    const noPrice = this.currentMarket?.noPrice || 0.50;
+
+    // 5. INDEPENDENT STRATEGY TRADING
+    // Each strategy can trade on its own with its own $500 balance
+    const betSize = 35; // Fixed $35 bet per strategy
+
+    let tradesOpened = 0;
+
+    for (const strategy of this.strategies) {
+      // Check if this strategy already has a position in this market
+      const existingPos = this.strategyTracker.getPosition(strategy.name, this.currentMarket?.id);
+      if (existingPos) continue;
+
+      // Get signal from this strategy
+      const signal = strategy.analyze(analysisData);
+
+      if (signal && signal.side && signal.confidence >= ALL_DAY_CONFIG.signals.minConfidence) {
+        // Calculate entry price based on side
+        const contractPrice = signal.side === 'UP' ? yesPrice : noPrice;
+        const entryPrice = Math.min(0.99, contractPrice + 0.01); // Slight premium
+
+        // Open position for this strategy
+        const result = this.strategyTracker.openPosition(strategy.name, {
+          side: signal.side,
+          entryPrice,
+          size: betSize,
+          confidence: signal.confidence,
+          marketId: this.currentMarket?.id,
+          marketSlug: this.currentMarket?.slug,
+          btcPriceAtEntry: this.lastPrice,
+          btcPriceAtMarketStart: this.priceAtStart,
+          contractPriceAtEntry: contractPrice,
+          regime: this.lastRegime,
+          htfTrend,
+          remainingMinutes
+        });
+
+        if (result.success) {
+          tradesOpened++;
+          strategy.recordTrade();
+        }
+      }
+    }
+
+    // 6. Also run aggregated signal as its own "strategy"
     const aggregatedSignal = this.signalAggregator.aggregate(
       this.strategies,
       analysisData,
       this.lastRegime
     );
 
-    // 6. Log signal
-    if (ALL_DAY_CONFIG.logging.logSignals) {
-      this.logger.logSignal(aggregatedSignal, {
-        strategyName: 'AGGREGATED',
-        marketId: this.currentMarket?.id,
-        price: this.lastPrice,
-        regime: this.lastRegime,
-        remainingMinutes,
-        actionTaken: aggregatedSignal.action
-      });
+    if (aggregatedSignal.action === 'ENTER') {
+      const existingAggPos = this.strategyTracker.getPosition('AGGREGATED', this.currentMarket?.id);
+
+      if (!existingAggPos) {
+        const contractPrice = aggregatedSignal.side === 'UP' ? yesPrice : noPrice;
+        const entryPrice = Math.min(0.99, contractPrice + 0.01);
+
+        const result = this.strategyTracker.openPosition('AGGREGATED', {
+          side: aggregatedSignal.side,
+          entryPrice,
+          size: betSize,
+          confidence: aggregatedSignal.confidence,
+          marketId: this.currentMarket?.id,
+          marketSlug: this.currentMarket?.slug,
+          btcPriceAtEntry: this.lastPrice,
+          btcPriceAtMarketStart: this.priceAtStart,
+          contractPriceAtEntry: contractPrice,
+          regime: this.lastRegime,
+          htfTrend,
+          remainingMinutes
+        });
+
+        if (result.success) {
+          tradesOpened++;
+        }
+      }
     }
 
-    // 7. Execute if we have an entry signal
-    if (aggregatedSignal.action === 'ENTER') {
-      // Check if we should enter
-      const canEnter = this.positionManager.shouldEnter(
-        { ...aggregatedSignal, marketId: this.currentMarket?.id },
-        this.riskManager
-      );
+    // 7. Print trades opened this iteration
+    if (tradesOpened > 0) {
+      const allPos = this.strategyTracker.getAllPositions();
+      const marketPos = allPos.filter(p => p.marketId === this.currentMarket?.id);
 
-      if (!canEnter.canEnter) {
-        return;
-      }
-
-      // Prepare market data for entry calculation
-      const marketData = {
-        yesPrice: this.currentMarket?.yesPrice || 0.50,
-        noPrice: this.currentMarket?.noPrice || 0.50,
-        remainingMinutes,
-        orderbook: this.currentMarket?.orderbook
-      };
-
-      // Calculate entry parameters
-      const entry = this.positionManager.calculateEntry(
-        aggregatedSignal,
-        marketData,
-        this.riskManager
-      );
-
-      if (entry.size < ALL_DAY_CONFIG.risk.minBetSize) {
-        return;
-      }
-
-      // Apply regime size multiplier
-      const regimeMult = this.regimeRouter.getSizeMultiplier(this.lastRegime);
-      const finalSize = entry.size * regimeMult;
-
-      // Open position
-      const result = this.engine.openPosition({
-        strategyName: 'AGGREGATED',
-        side: aggregatedSignal.side,
-        entryPrice: entry.entryPrice,
-        size: finalSize,
-        confidence: aggregatedSignal.confidence,
-        marketId: this.currentMarket?.id,
-        marketSlug: this.currentMarket?.slug,
-        remainingMinutes,
-        signals: aggregatedSignal.signals
-      });
-
-      if (result.success) {
-        // Record trades for each contributing strategy
-        for (const signal of aggregatedSignal.signals) {
-          const strategy = this.strategies.find(s => s.name === signal.strategyName);
-          if (strategy) strategy.recordTrade();
-        }
-
-        console.log(`\n${colors.bright}>>> NEW TRADE <<<${colors.reset}`);
-        console.log(`  Signal: ${colors.cyan}AGGREGATED${colors.reset}`);
-        console.log(`  Strategies: ${aggregatedSignal.signals.map(s => s.strategyName).join(', ')}`);
-        console.log(`  Side: ${aggregatedSignal.side === 'UP' ? colors.green : colors.red}${aggregatedSignal.side}${colors.reset}`);
-        console.log(`  Size: $${finalSize.toFixed(2)}`);
-        console.log(`  Entry: ${entry.entryPrice.toFixed(4)}`);
-        console.log(`  Confidence: ${(aggregatedSignal.confidence * 100).toFixed(1)}%`);
-        console.log(`  Strength: ${aggregatedSignal.strength}`);
+      console.log(`\n${colors.bright}>>> ${tradesOpened} NEW TRADES <<<${colors.reset}`);
+      for (const pos of marketPos.slice(-tradesOpened)) {
+        const sideColor = pos.side === 'UP' ? colors.green : colors.red;
+        console.log(`  ${pos.strategyName.padEnd(20)} | ${sideColor}${pos.side}${colors.reset} | Entry: ${(pos.contractPriceAtEntry * 100).toFixed(0)}c | Conf: ${(pos.confidence * 100).toFixed(0)}%`);
       }
     }
   }
@@ -539,12 +659,20 @@ class AllDayTrader {
     const winRate = this.sessionState.getWinRate();
     const winRateColor = winRate >= 50 ? colors.green : colors.yellow;
 
+    // Get strategy positions and contract prices
+    const allPositions = this.strategyTracker.getAllPositions();
+    const marketPositions = allPositions.filter(p => p.marketId === this.currentMarket?.id);
+    const yesPrice = this.currentMarket?.yesPrice || 0.50;
+    const noPrice = this.currentMarket?.noPrice || 0.50;
+
     let status = `${colors.dim}[${new Date().toLocaleTimeString()}]${colors.reset} `;
     status += `BTC: $${this.lastPrice?.toFixed(0) || '---'} | `;
-    status += `Balance: ${balanceColor}$${this.sessionState.balance.toFixed(2)}${colors.reset} (${formatPct(this.sessionState.getReturnPercent())}) | `;
-    status += `Trades: ${this.sessionState.tradesExecuted} | `;
-    status += `Win: ${winRateColor}${winRate.toFixed(0)}%${colors.reset} | `;
-    status += `Positions: ${this.engine.positions.length} | `;
+
+    // Show contract prices
+    status += `YES: ${(yesPrice * 100).toFixed(0)}c NO: ${(noPrice * 100).toFixed(0)}c | `;
+
+    // Show position count
+    status += `Pos: ${marketPositions.length} | `;
     status += `Regime: ${this.lastRegime || '---'} | `;
     status += `Time: ${remaining.toFixed(1)}m`;
 
@@ -600,13 +728,13 @@ class AllDayTrader {
     }
     console.log('');
 
-    // Strategy Performance
-    console.log(`${colors.cyan}STRATEGY WEIGHTS${colors.reset}`);
-    const weights = this.performanceTracker.getAllWeights();
-    for (const [name, data] of Object.entries(weights)) {
-      const wr = (data.winRate * 100).toFixed(0);
-      const wrColor = data.winRate >= 0.5 ? colors.green : colors.red;
-      console.log(`  ${name.padEnd(20)} | Weight: ${data.weight.toFixed(2)} | Win: ${wrColor}${wr}%${colors.reset} | Trades: ${data.trades}`);
+    // Strategy Leaderboard (Independent Trading)
+    console.log(`${colors.cyan}STRATEGY LEADERBOARD${colors.reset}`);
+    const summaries = this.strategyTracker.getAllStrategySummaries();
+    for (const s of summaries) {
+      const returnColor = s.returnPct >= 0 ? colors.green : colors.red;
+      const wrColor = s.winRate >= 50 ? colors.green : colors.red;
+      console.log(`  ${s.name.padEnd(20)} | $${s.balance.toFixed(0).padStart(5)} (${returnColor}${s.returnPct >= 0 ? '+' : ''}${s.returnPct.toFixed(1)}%${colors.reset}) | W/L: ${s.wins}/${s.losses} (${wrColor}${s.winRate.toFixed(0)}%${colors.reset}) | Pos: ${s.activePositions}`);
     }
     console.log('');
 
@@ -636,9 +764,11 @@ class AllDayTrader {
     console.log(`${colors.bright}║           ALL-DAY BTC TRADING SYSTEM                      ║${colors.reset}`);
     console.log(`${colors.bright}╚═══════════════════════════════════════════════════════════╝${colors.reset}\n`);
 
-    console.log(`Initial Balance: $${this.sessionState.initialBalance}`);
-    console.log(`Strategies: ${this.strategies.map(s => s.name).join(', ')}`);
+    console.log(`Mode: ${colors.cyan}INDEPENDENT STRATEGY TESTING${colors.reset}`);
+    console.log(`Each strategy gets: ${colors.green}$500${colors.reset}`);
+    console.log(`Strategies: ${this.strategies.length + 1} (${this.strategies.map(s => s.name).join(', ')}, AGGREGATED)`);
     console.log(`Poll Interval: ${this.pollInterval}ms`);
+    console.log(`CSV Log: ${colors.dim}${this.strategyTracker.tradesFile}${colors.reset}`);
     console.log(`\nFeatures:`);
     console.log(`  - Signal Aggregation: ${colors.green}ON${colors.reset}`);
     console.log(`  - Dynamic Exits (TP/SL): ${ALL_DAY_CONFIG.position.takeProfit.enabled ? colors.green + 'ON' : colors.red + 'OFF'}${colors.reset}`);
@@ -694,11 +824,24 @@ class AllDayTrader {
     this.running = false;
     this.displayDashboard();
 
-    const summary = this.sessionState.generateSummary();
-    console.log(`\nFinal Balance: $${summary.finalBalance.toFixed(2)}`);
-    console.log(`Total P/L: ${formatUSD(summary.dailyPnL)} (${summary.returnPercent}%)`);
-    console.log(`Total Trades: ${summary.totalTrades}`);
-    console.log(`Win Rate: ${summary.winRate}%`);
+    // Write final summary CSV
+    const summaryFile = this.strategyTracker.writeSummaryCSV();
+
+    console.log(`\n${colors.bright}═══════════════════════════════════════════════════════════════${colors.reset}`);
+    console.log(`${colors.bright}                    FINAL STRATEGY RESULTS${colors.reset}`);
+    console.log(`${colors.bright}═══════════════════════════════════════════════════════════════${colors.reset}\n`);
+
+    const summaries = this.strategyTracker.getAllStrategySummaries();
+    for (let i = 0; i < summaries.length; i++) {
+      const s = summaries[i];
+      const returnColor = s.returnPct >= 0 ? colors.green : colors.red;
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '  ';
+      console.log(`${medal} ${(i + 1).toString().padStart(2)}. ${s.name.padEnd(20)} | $${s.balance.toFixed(2).padStart(7)} (${returnColor}${s.returnPct >= 0 ? '+' : ''}${s.returnPct.toFixed(2)}%${colors.reset}) | W/L: ${s.wins}/${s.losses} | WR: ${s.winRate.toFixed(1)}%`);
+    }
+
+    console.log(`\n${colors.cyan}CSV Files:${colors.reset}`);
+    console.log(`  Trades: ${this.strategyTracker.tradesFile}`);
+    console.log(`  Summary: ${summaryFile}`);
   }
 }
 
