@@ -6,7 +6,8 @@ const AGGREGATOR_ABI = [
   "function decimals() view returns (uint8)"
 ];
 
-const iface = new ethers.Interface(AGGREGATOR_ABI);
+// ethers v5 uses utils.Interface, v6 uses Interface directly
+const iface = ethers.utils ? new ethers.utils.Interface(AGGREGATOR_ABI) : new ethers.Interface(AGGREGATOR_ABI);
 
 let preferredRpcUrl = null;
 

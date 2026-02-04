@@ -23,9 +23,11 @@ export function computeEdge({ modelUp, modelDown, marketYes, marketNo }) {
 export function decide({ remainingMinutes, edgeUp, edgeDown, modelUp = null, modelDown = null }) {
   const phase = remainingMinutes > 10 ? "EARLY" : remainingMinutes > 5 ? "MID" : "LATE";
 
-  const threshold = phase === "EARLY" ? 0.05 : phase === "MID" ? 0.1 : 0.2;
+  // Edge thresholds by phase (lowered for more trades)
+  const threshold = phase === "EARLY" ? 0.05 : phase === "MID" ? 0.08 : 0.15;
 
-  const minProb = phase === "EARLY" ? 0.55 : phase === "MID" ? 0.6 : 0.65;
+  // Minimum probability thresholds (lowered to allow trades with good edge)
+  const minProb = phase === "EARLY" ? 0.52 : phase === "MID" ? 0.53 : 0.55;
 
   if (edgeUp === null || edgeDown === null) {
     return { action: "NO_TRADE", side: null, phase, reason: "missing_market_data" };

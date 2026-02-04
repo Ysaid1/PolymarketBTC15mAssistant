@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { applyGlobalProxyFromEnv } from "./net/proxy.js";
+import { recordPrediction, checkPendingOutcomes, getBacktestStats } from "./backtest.js";
 
 function countVwapCrosses(closes, vwapSeries, lookback) {
   if (closes.length < lookback || vwapSeries.length < lookback) return null;
@@ -403,6 +404,7 @@ async function main() {
   let prevSpotPrice = null;
   let prevCurrentPrice = null;
   let priceToBeatState = { slug: null, value: null, setAtMs: null };
+  let lastTrackedMarketId = null; // Track which market we've recorded a prediction for
 
   const header = [
     "timestamp",
@@ -595,6 +597,39 @@ async function main() {
       }
 
       const priceToBeat = priceToBeatState.slug === marketSlug ? priceToBeatState.value : null;
+
+      // ========== BACKTEST TRACKING ==========
+      // Check if any previous markets have ended and record their outcomes
+      if (currentPrice !== null) {
+        checkPendingOutcomes(currentPrice);
+      }
+
+      // Record prediction for new market windows (only once per market)
+      const currentMarketId = poly.ok ? (poly.market?.slug ?? poly.market?.id ?? null) : null;
+      const marketEndTime = poly.ok && poly.market?.endDate ? poly.market.endDate : null;
+      const marketStartTime = poly.ok && poly.market?.eventStartTime ? poly.market.eventStartTime : null;
+
+      if (
+        currentMarketId &&
+        currentMarketId !== lastTrackedMarketId &&
+        priceToBeat !== null &&
+        timeAware.adjustedUp !== null &&
+        timeLeftMin > 12 // Only record early in the window for clean predictions
+      ) {
+        recordPrediction({
+          marketId: currentMarketId,
+          marketStart: marketStartTime,
+          marketEnd: marketEndTime,
+          priceToBeat,
+          predictedUp: timeAware.adjustedUp,
+          predictedDown: timeAware.adjustedDown,
+          marketUpPrice: marketUp,
+          marketDownPrice: marketDown
+        });
+        lastTrackedMarketId = currentMarketId;
+      }
+      // ========================================
+
       const currentPriceBaseLine = colorPriceLine({
         label: "CURRENT PRICE",
         price: currentPrice,
@@ -696,6 +731,18 @@ async function main() {
         sepLine(),
         "",
         kv("ET | Session:", `${ANSI.white}${fmtEtTime(new Date())}${ANSI.reset} | ${ANSI.white}${getBtcSession(new Date())}${ANSI.reset}`),
+        "",
+        sepLine(),
+        "",
+        (() => {
+          const stats = getBacktestStats();
+          if (stats.total === 0) {
+            return kv("Backtest:", `${ANSI.gray}Collecting data...${ANSI.reset}`);
+          }
+          const accColor = parseFloat(stats.accuracy) >= 55 ? ANSI.green : parseFloat(stats.accuracy) < 45 ? ANSI.red : ANSI.yellow;
+          const plColor = parseFloat(stats.profitLoss) > 0 ? ANSI.green : parseFloat(stats.profitLoss) < 0 ? ANSI.red : ANSI.gray;
+          return kv("Backtest:", `${accColor}${stats.correct}/${stats.total} (${stats.accuracy}%)${ANSI.reset} | P/L: ${plColor}${parseFloat(stats.profitLoss) > 0 ? "+" : ""}${stats.profitLoss}${ANSI.reset}`);
+        })(),
         "",
         sepLine(),
         centerText(`${ANSI.dim}${ANSI.gray}created by @krajekis${ANSI.reset}`, screenWidth())
