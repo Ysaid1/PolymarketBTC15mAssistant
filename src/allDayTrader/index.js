@@ -51,7 +51,8 @@ import {
   fetchBinanceKlines,
   fetchBinanceLastPrice,
   fetchPolymarketEvents,
-  fetchPolymarketOrderBook
+  fetchPolymarketOrderBook,
+  fetchPolymarketPrice
 } from '../paperTrading/httpClient.js';
 import { computeSessionVwap, computeVwapSeries } from '../indicators/vwap.js';
 import { computeRsi, slopeLast } from '../indicators/rsi.js';
@@ -306,30 +307,38 @@ class AllDayTrader {
       const yesTokenId = tokenIds?.[0] || market.tokens?.[0]?.token_id;
       const noTokenId = tokenIds?.[1] || market.tokens?.[1]?.token_id;
 
-      // Fetch YES orderbook for live price
-      // bestAsk = lowest price someone is selling at = price to BUY YES
-      // This is what Polymarket UI shows as the "YES price"
-      if (yesTokenId) {
-        try {
-          const yesOrderbook = await fetchPolymarketOrderBook(yesTokenId);
-          market.orderbook = this.summarizeOrderBook(yesOrderbook);
+      // Fetch LIVE prices using the /price endpoint (this is accurate!)
+      // curl "https://clob.polymarket.com/price?token_id=XXX&side=BUY"
 
-          // Use bestAsk as the YES price (what you pay to buy YES)
-          market.yesPrice = market.orderbook.bestAsk || market.orderbook.bestBid || 0.50;
+      if (yesTokenId && noTokenId) {
+        try {
+          // Fetch both prices in parallel
+          const [yesPrice, noPrice] = await Promise.all([
+            fetchPolymarketPrice(yesTokenId, 'BUY'),
+            fetchPolymarketPrice(noTokenId, 'BUY')
+          ]);
+
+          market.yesPrice = yesPrice;
+          market.noPrice = noPrice;
 
           if (isNewMarket) {
-            console.log(`${colors.dim}[DEBUG] YES orderbook: bestBid=${market.orderbook.bestBid}, bestAsk=${market.orderbook.bestAsk}${colors.reset}`);
+            console.log(`${colors.dim}[DEBUG] Live prices from /price API: YES=${yesPrice}, NO=${noPrice}${colors.reset}`);
           }
         } catch (err) {
-          console.error(`${colors.yellow}[WARN] YES orderbook fetch failed: ${err.message}${colors.reset}`);
+          console.error(`${colors.yellow}[WARN] Price fetch failed: ${err.message}${colors.reset}`);
           market.yesPrice = 0.50;
+          market.noPrice = 0.50;
         }
       } else {
         market.yesPrice = 0.50;
+        market.noPrice = 0.50;
       }
 
-      // For NO price, derive from YES (they should sum to ~$1)
-      market.noPrice = 1 - market.yesPrice;
+      // ALWAYS update currentMarket with fresh prices (not just on new market)
+      if (this.currentMarket) {
+        this.currentMarket.yesPrice = market.yesPrice;
+        this.currentMarket.noPrice = market.noPrice;
+      }
 
       if (isNewMarket) {
         console.log(`${colors.green}[PRICES] YES: ${(market.yesPrice * 100).toFixed(0)}c, NO: ${(market.noPrice * 100).toFixed(0)}c${colors.reset}`);

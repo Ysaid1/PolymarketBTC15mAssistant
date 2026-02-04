@@ -105,3 +105,16 @@ export async function fetchPolymarketOrderBook(tokenId) {
   const url = `https://clob.polymarket.com/book?token_id=${tokenId}`;
   return await fetchJson(url);
 }
+
+/**
+ * Fetch Polymarket live price for a token
+ * This is the CORRECT endpoint for real-time prices
+ * @param {string} tokenId - The token ID
+ * @param {string} side - 'BUY' or 'SELL'
+ * @returns {Promise<number>} - The price as a decimal (e.g., 0.35 = 35 cents)
+ */
+export async function fetchPolymarketPrice(tokenId, side = 'BUY') {
+  const url = `https://clob.polymarket.com/price?token_id=${tokenId}&side=${side}`;
+  const data = await fetchJson(url);
+  return parseFloat(data.price);
+}
