@@ -274,11 +274,15 @@ class AllDayTrader {
         }
         console.log(`Regime: ${colors.yellow}${this.lastRegime}${colors.reset}`);
 
-        // Debug: log market structure on new market
-        console.log(`${colors.dim}[DEBUG] Market fields: ${Object.keys(market).join(', ')}${colors.reset}`);
-        if (market.outcomePrices) {
-          console.log(`${colors.dim}[DEBUG] outcomePrices: ${JSON.stringify(market.outcomePrices)}${colors.reset}`);
+        // Debug: log token IDs for orderbook fetching
+        let debugTokenIds = market.clobTokenIds;
+        if (typeof debugTokenIds === 'string') {
+          try { debugTokenIds = JSON.parse(debugTokenIds); } catch (e) { debugTokenIds = null; }
         }
+        const yesToken = debugTokenIds?.[0] || market.tokens?.[0]?.token_id;
+        const noToken = debugTokenIds?.[1] || market.tokens?.[1]?.token_id;
+        console.log(`${colors.dim}[DEBUG] YES token: ${yesToken || 'NONE'}${colors.reset}`);
+        console.log(`${colors.dim}[DEBUG] NO token: ${noToken || 'NONE'}${colors.reset}`);
       } else {
         // Same market - update end time if available
         if (marketEndTime) {
@@ -286,56 +290,49 @@ class AllDayTrader {
         }
       }
 
-      // Try to get prices from market data first
-      // outcomePrices can be a JSON string like "[\"0.045\", \"0.955\"]" or an array
-      let outcomePrices = market.outcomePrices;
+      // ALWAYS fetch live prices from orderbook API
+      // The outcomePrices field from /events is stale/cached and NOT reliable
 
-      // Parse if it's a JSON string
-      if (typeof outcomePrices === 'string') {
+      // Parse clobTokenIds if it's a JSON string
+      let tokenIds = market.clobTokenIds;
+      if (typeof tokenIds === 'string') {
         try {
-          outcomePrices = JSON.parse(outcomePrices);
+          tokenIds = JSON.parse(tokenIds);
         } catch (e) {
-          outcomePrices = null;
+          tokenIds = null;
         }
       }
 
-      if (outcomePrices && Array.isArray(outcomePrices) && outcomePrices.length >= 2) {
-        market.yesPrice = parseFloat(outcomePrices[0]) || 0.50;
-        market.noPrice = parseFloat(outcomePrices[1]) || 0.50;
+      const yesTokenId = tokenIds?.[0] || market.tokens?.[0]?.token_id;
+      const noTokenId = tokenIds?.[1] || market.tokens?.[1]?.token_id;
 
-        if (isNewMarket) {
-          console.log(`${colors.green}[PRICES] YES: ${(market.yesPrice * 100).toFixed(0)}c, NO: ${(market.noPrice * 100).toFixed(0)}c${colors.reset}`);
+      // Fetch YES orderbook for live price
+      // bestAsk = lowest price someone is selling at = price to BUY YES
+      // This is what Polymarket UI shows as the "YES price"
+      if (yesTokenId) {
+        try {
+          const yesOrderbook = await fetchPolymarketOrderBook(yesTokenId);
+          market.orderbook = this.summarizeOrderBook(yesOrderbook);
+
+          // Use bestAsk as the YES price (what you pay to buy YES)
+          market.yesPrice = market.orderbook.bestAsk || market.orderbook.bestBid || 0.50;
+
+          if (isNewMarket) {
+            console.log(`${colors.dim}[DEBUG] YES orderbook: bestBid=${market.orderbook.bestBid}, bestAsk=${market.orderbook.bestAsk}${colors.reset}`);
+          }
+        } catch (err) {
+          console.error(`${colors.yellow}[WARN] YES orderbook fetch failed: ${err.message}${colors.reset}`);
+          market.yesPrice = 0.50;
         }
       } else {
-        // Fallback: try orderbook API
-        const yesTokenId = market.clobTokenIds?.[0] || market.tokens?.[0]?.token_id;
-        const noTokenId = market.clobTokenIds?.[1] || market.tokens?.[1]?.token_id;
+        market.yesPrice = 0.50;
+      }
 
-        // Fetch YES orderbook
-        if (yesTokenId) {
-          try {
-            const yesOrderbook = await fetchPolymarketOrderBook(yesTokenId);
-            market.orderbook = this.summarizeOrderBook(yesOrderbook);
-            market.yesPrice = market.orderbook.bestBid || 0.50;
-          } catch (err) {
-            // Silently fall back to 0.50
-            market.yesPrice = 0.50;
-          }
-        }
+      // For NO price, derive from YES (they should sum to ~$1)
+      market.noPrice = 1 - market.yesPrice;
 
-        // Fetch NO orderbook separately
-        if (noTokenId) {
-          try {
-            const noOrderbook = await fetchPolymarketOrderBook(noTokenId);
-            market.noOrderbook = this.summarizeOrderBook(noOrderbook);
-            market.noPrice = market.noOrderbook.bestBid || 0.50;
-          } catch (err) {
-            // Fallback: derive from YES price
-            market.noPrice = market.yesPrice ? (1 - market.yesPrice) : 0.50;
-          }
-        } else {
-          market.noPrice = market.yesPrice ? (1 - market.yesPrice) : 0.50;
-        }
+      if (isNewMarket) {
+        console.log(`${colors.green}[PRICES] YES: ${(market.yesPrice * 100).toFixed(0)}c, NO: ${(market.noPrice * 100).toFixed(0)}c${colors.reset}`);
       }
 
       return market;
@@ -529,8 +526,9 @@ class AllDayTrader {
       return;
     }
 
-    // 3. Don't trade in first or last minute
-    if (remainingMinutes > 14 || remainingMinutes < 1) {
+    // 3. Don't trade in first minute or last 3 minutes
+    // Late entries have poor risk/reward - not enough time for BTC to move
+    if (remainingMinutes > 14 || remainingMinutes < 3) {
       return;
     }
 
@@ -573,6 +571,13 @@ class AllDayTrader {
       if (signal && signal.side && signal.confidence >= ALL_DAY_CONFIG.signals.minConfidence) {
         // Calculate entry price based on side
         const contractPrice = signal.side === 'UP' ? yesPrice : noPrice;
+
+        // PRICE GUARD: Skip trades at extreme prices (no edge possible)
+        // Don't buy contracts above 85c or below 15c - risk/reward is terrible
+        if (contractPrice > 0.85 || contractPrice < 0.15) {
+          continue; // Skip this trade
+        }
+
         const entryPrice = Math.min(0.99, contractPrice + 0.01); // Slight premium
 
         // Open position for this strategy
@@ -610,25 +615,29 @@ class AllDayTrader {
 
       if (!existingAggPos) {
         const contractPrice = aggregatedSignal.side === 'UP' ? yesPrice : noPrice;
-        const entryPrice = Math.min(0.99, contractPrice + 0.01);
 
-        const result = this.strategyTracker.openPosition('AGGREGATED', {
-          side: aggregatedSignal.side,
-          entryPrice,
-          size: betSize,
-          confidence: aggregatedSignal.confidence,
-          marketId: this.currentMarket?.id,
-          marketSlug: this.currentMarket?.slug,
-          btcPriceAtEntry: this.lastPrice,
-          btcPriceAtMarketStart: this.priceAtStart,
-          contractPriceAtEntry: contractPrice,
-          regime: this.lastRegime,
-          htfTrend,
-          remainingMinutes
-        });
+        // PRICE GUARD: Skip trades at extreme prices (no edge possible)
+        if (contractPrice <= 0.85 && contractPrice >= 0.15) {
+          const entryPrice = Math.min(0.99, contractPrice + 0.01);
 
-        if (result.success) {
-          tradesOpened++;
+          const result = this.strategyTracker.openPosition('AGGREGATED', {
+            side: aggregatedSignal.side,
+            entryPrice,
+            size: betSize,
+            confidence: aggregatedSignal.confidence,
+            marketId: this.currentMarket?.id,
+            marketSlug: this.currentMarket?.slug,
+            btcPriceAtEntry: this.lastPrice,
+            btcPriceAtMarketStart: this.priceAtStart,
+            contractPriceAtEntry: contractPrice,
+            regime: this.lastRegime,
+            htfTrend,
+            remainingMinutes
+          });
+
+          if (result.success) {
+            tradesOpened++;
+          }
         }
       }
     }
@@ -641,7 +650,7 @@ class AllDayTrader {
       console.log(`\n${colors.bright}>>> ${tradesOpened} NEW TRADES <<<${colors.reset}`);
       for (const pos of marketPos.slice(-tradesOpened)) {
         const sideColor = pos.side === 'UP' ? colors.green : colors.red;
-        console.log(`  ${pos.strategyName.padEnd(20)} | ${sideColor}${pos.side}${colors.reset} | Entry: ${(pos.contractPriceAtEntry * 100).toFixed(0)}c | Conf: ${(pos.confidence * 100).toFixed(0)}%`);
+        console.log(`  ${pos.strategyName.padEnd(20)} | ${sideColor}${pos.side}${colors.reset} | $${pos.size.toFixed(0)} @ ${(pos.contractPriceAtEntry * 100).toFixed(0)}c | Conf: ${(pos.confidence * 100).toFixed(0)}%`);
       }
     }
   }
