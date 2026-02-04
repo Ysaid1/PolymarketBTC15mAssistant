@@ -191,6 +191,16 @@ class AllDayTrader {
 
       if (!market) return null;
 
+      // Extract end time from market - try multiple possible fields
+      let marketEndTime = null;
+      const endDateField = market.endDate || market.end_date || market.endDateIso;
+      if (endDateField) {
+        const parsed = new Date(endDateField).getTime();
+        if (Number.isFinite(parsed) && parsed > Date.now()) {
+          marketEndTime = parsed;
+        }
+      }
+
       // Check if market changed
       if (this.currentMarket?.id !== market.id) {
         if (this.currentMarket) {
@@ -198,6 +208,7 @@ class AllDayTrader {
         }
 
         this.currentMarket = market;
+        this.currentMarket.endTime = marketEndTime;
         this.priceAtStart = this.lastPrice;
         this.marketStartTime = Date.now();
         this.positionManager.onMarketChange();
@@ -208,7 +219,18 @@ class AllDayTrader {
         console.log(`\n${colors.cyan}=== NEW MARKET ===${colors.reset}`);
         console.log(`${market.slug}`);
         console.log(`Start Price: $${this.priceAtStart?.toFixed(2)}`);
+        if (marketEndTime) {
+          const endDate = new Date(marketEndTime);
+          console.log(`End Time: ${endDate.toLocaleTimeString()} (${((marketEndTime - Date.now()) / 60000).toFixed(1)} min remaining)`);
+        } else {
+          console.log(`${colors.yellow}End Time: Unknown (estimating from detection time)${colors.reset}`);
+        }
         console.log(`Regime: ${colors.yellow}${this.lastRegime}${colors.reset}`);
+      } else {
+        // Same market - update end time if available
+        if (marketEndTime) {
+          this.currentMarket.endTime = marketEndTime;
+        }
       }
 
       // Fetch order book
@@ -304,7 +326,15 @@ class AllDayTrader {
 
   getRemainingMinutes() {
     if (!this.currentMarket) return 15;
-    const endTime = this.currentMarket.endTime || (this.marketStartTime + 15 * 60 * 1000);
+
+    // Use actual market end time if available
+    let endTime = this.currentMarket.endTime;
+
+    if (!endTime) {
+      // Fallback to estimate based on when we first saw the market
+      endTime = this.marketStartTime + 15 * 60 * 1000;
+    }
+
     const remaining = (endTime - Date.now()) / (1000 * 60);
     return Math.max(0, Math.min(15, remaining));
   }

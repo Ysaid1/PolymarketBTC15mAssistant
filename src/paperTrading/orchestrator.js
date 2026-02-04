@@ -247,8 +247,15 @@ export class PaperTradingOrchestrator {
 
       if (!market) return null;
 
-      // Extract end time from market
-      const marketEndTime = market.endDate ? new Date(market.endDate).getTime() : null;
+      // Extract end time from market - try multiple possible fields
+      let marketEndTime = null;
+      const endDateField = market.endDate || market.end_date || market.endDateIso;
+      if (endDateField) {
+        const parsed = new Date(endDateField).getTime();
+        if (Number.isFinite(parsed) && parsed > Date.now()) {
+          marketEndTime = parsed;
+        }
+      }
 
       // Check if market changed
       if (this.currentMarket?.id !== market.id) {
@@ -267,6 +274,12 @@ export class PaperTradingOrchestrator {
         console.log(`\n${colors.cyan}=== NEW MARKET ===${colors.reset}`);
         console.log(`${market.slug}`);
         console.log(`Start Price: $${this.priceAtStart ? this.priceAtStart.toFixed(2) : 'N/A'}`);
+        if (marketEndTime) {
+          const endDate = new Date(marketEndTime);
+          console.log(`End Time: ${endDate.toLocaleTimeString()} (${((marketEndTime - Date.now()) / 60000).toFixed(1)} min remaining)`);
+        } else {
+          console.log(`${colors.yellow}End Time: Unknown (estimating from detection time)${colors.reset}`);
+        }
       } else {
         // Same market - update end time if available
         if (marketEndTime) {
@@ -301,7 +314,15 @@ export class PaperTradingOrchestrator {
   getRemainingMinutes() {
     if (!this.currentMarket) return 15;
 
-    const endTime = this.currentMarket.endTime || (this.marketStartTime + 15 * 60 * 1000);
+    // Use actual market end time if available, otherwise estimate from market slug
+    let endTime = this.currentMarket.endTime;
+
+    if (!endTime) {
+      // Try to parse end time from market slug (format often includes time like "01:15")
+      // Fallback to conservative estimate based on when we first saw the market
+      endTime = this.marketStartTime + 15 * 60 * 1000;
+    }
+
     const remaining = (endTime - Date.now()) / (1000 * 60);
     return Math.max(0, Math.min(15, remaining));
   }

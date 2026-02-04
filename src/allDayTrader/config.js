@@ -228,7 +228,7 @@ export const STRATEGY_METADATA = {
   VOLATILITY_BREAKOUT: {
     description: 'Breakouts from Bollinger Band squeezes',
     regimeCompatibility: ['TREND_UP', 'TREND_DOWN'],
-    timeframePreference: 'longer', // Needs time for move to play out
+    timeframePreference: 'longer',
     riskLevel: 'high'
   },
   RSI: {
@@ -239,6 +239,24 @@ export const STRATEGY_METADATA = {
   },
   MACD: {
     description: 'MACD crossovers and histogram momentum',
+    regimeCompatibility: ['TREND_UP', 'TREND_DOWN', 'RANGE'],
+    timeframePreference: 'any',
+    riskLevel: 'medium'
+  },
+  TREND_CONFIRM: {
+    description: 'High-confidence trend following with EMA+VWAP+momentum',
+    regimeCompatibility: ['TREND_UP', 'TREND_DOWN'],
+    timeframePreference: 'any',
+    riskLevel: 'low'
+  },
+  PRICE_ACTION: {
+    description: 'Candlestick patterns at support/resistance',
+    regimeCompatibility: ['TREND_UP', 'TREND_DOWN', 'RANGE'],
+    timeframePreference: 'any',
+    riskLevel: 'medium'
+  },
+  VOLUME_PROFILE: {
+    description: 'Volume spikes, directional imbalance, divergence',
     regimeCompatibility: ['TREND_UP', 'TREND_DOWN', 'RANGE'],
     timeframePreference: 'any',
     riskLevel: 'medium'

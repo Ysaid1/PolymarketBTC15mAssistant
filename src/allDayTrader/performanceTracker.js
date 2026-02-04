@@ -14,8 +14,11 @@ export class PerformanceTracker {
     // Trade history per strategy
     this.strategyHistory = {};
 
-    // Initialize for known strategies
-    const strategies = ['MOMENTUM', 'MEAN_REVERSION', 'VOLATILITY_BREAKOUT', 'RSI', 'MACD'];
+    // Initialize for known strategies (original 5 + new 3)
+    const strategies = [
+      'MOMENTUM', 'MEAN_REVERSION', 'VOLATILITY_BREAKOUT', 'RSI', 'MACD',
+      'TREND_CONFIRM', 'PRICE_ACTION', 'VOLUME_PROFILE', 'AGGREGATED'
+    ];
     for (const name of strategies) {
       this.strategyHistory[name] = {
         trades: [],
