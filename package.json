@@ -4,14 +4,15 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/allDayTrader/index.js",
+    "old-start": "node src/index.js",
     "stats": "node src/stats.js",
     "trade": "node --env-file=.env src/trading/bot.js",
     "setup-trading": "node --env-file=.env src/trading/setup.js",
     "paper": "node --env-file=.env src/paperTrade.js",
     "paper:backtest": "node --env-file=.env src/paperTrade.js --backtest 120",
     "paper:backtest:quick": "node --env-file=.env src/paperTrade.js --backtest 30",
-    "allday": "node --env-file=.env src/allDayTrader/index.js"
+    "allday": "node src/allDayTrader/index.js"
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.2.1",
