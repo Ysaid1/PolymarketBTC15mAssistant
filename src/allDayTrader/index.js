@@ -9,9 +9,16 @@
  * Usage:
  *   node src/allDayTrader/index.js
  *   node src/allDayTrader/index.js --balance 1000
+ *
+ * HTTP Endpoints (for Railway):
+ *   GET /              - Health check & live stats
+ *   GET /csv           - Download trades CSV
+ *   GET /leaderboard   - Strategy leaderboard JSON
  */
 
 import 'dotenv/config';
+import http from 'http';
+import fs from 'fs';
 
 // Import components
 import { ALL_DAY_CONFIG } from './config.js';
@@ -903,6 +910,99 @@ class AllDayTrader {
     console.log(`  Trades: ${this.strategyTracker.tradesFile}`);
     console.log(`  Summary: ${summaryFile}`);
   }
+
+  /**
+   * Get leaderboard data as JSON
+   */
+  getLeaderboardJSON() {
+    const summaries = this.strategyTracker.getAllStrategySummaries();
+    return {
+      timestamp: new Date().toISOString(),
+      currentMarket: this.currentMarket?.slug || null,
+      btcPrice: this.lastPrice,
+      priceAtStart: this.priceAtStart,
+      regime: this.lastRegime,
+      remainingMinutes: this.getRemainingMinutes(),
+      strategies: summaries.map(s => ({
+        name: s.name,
+        balance: s.balance,
+        returnPct: s.returnPct,
+        wins: s.wins,
+        losses: s.losses,
+        winRate: s.winRate,
+        activePositions: s.activePositions
+      }))
+    };
+  }
+
+  /**
+   * Start HTTP server for Railway health checks and data access
+   */
+  startHttpServer(port = 3000) {
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url, `http://localhost:${port}`);
+
+      // Health check / live stats
+      if (url.pathname === '/' || url.pathname === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(this.getLeaderboardJSON(), null, 2));
+        return;
+      }
+
+      // Download trades CSV
+      if (url.pathname === '/csv' || url.pathname === '/trades') {
+        try {
+          const csvPath = this.strategyTracker.tradesFile;
+          if (fs.existsSync(csvPath)) {
+            const csv = fs.readFileSync(csvPath, 'utf8');
+            res.writeHead(200, {
+              'Content-Type': 'text/csv',
+              'Content-Disposition': 'attachment; filename="trades.csv"'
+            });
+            res.end(csv);
+          } else {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('No trades CSV found yet');
+          }
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Error reading CSV: ' + e.message);
+        }
+        return;
+      }
+
+      // Leaderboard JSON
+      if (url.pathname === '/leaderboard' || url.pathname === '/api/leaderboard') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(this.getLeaderboardJSON(), null, 2));
+        return;
+      }
+
+      // Live performance for aggregator weights
+      if (url.pathname === '/weights') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          livePerformance: this.signalAggregator.livePerformance,
+          timestamp: new Date().toISOString()
+        }, null, 2));
+        return;
+      }
+
+      // 404
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found. Try: /, /csv, /leaderboard, /weights');
+    });
+
+    server.listen(port, () => {
+      console.log(`${colors.green}HTTP server running on port ${port}${colors.reset}`);
+      console.log(`  GET /           - Health check & stats`);
+      console.log(`  GET /csv        - Download trades CSV`);
+      console.log(`  GET /leaderboard - Strategy leaderboard JSON`);
+      console.log(`  GET /weights    - Live aggregator weights`);
+    });
+
+    return server;
+  }
 }
 
 // Parse CLI args
@@ -910,16 +1010,24 @@ const args = process.argv.slice(2);
 const balanceIdx = args.indexOf('--balance');
 const initialBalance = balanceIdx >= 0 ? parseFloat(args[balanceIdx + 1]) || 500 : 500;
 
+// HTTP port (Railway sets PORT env var)
+const httpPort = parseInt(process.env.PORT) || 3000;
+
 // Create and run
 const trader = new AllDayTrader({ initialBalance });
 
+// Start HTTP server for Railway health checks and data access
+const httpServer = trader.startHttpServer(httpPort);
+
 process.on('SIGINT', () => {
   trader.stop();
+  httpServer.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   trader.stop();
+  httpServer.close();
   process.exit(0);
 });
 
