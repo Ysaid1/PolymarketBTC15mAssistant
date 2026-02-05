@@ -1,9 +1,15 @@
 /**
- * Signal Aggregator
+ * Signal Aggregator (IMPROVED)
  *
  * Combines signals from multiple strategies into a single
- * unified trading decision. Handles conflicts, applies weights,
- * and produces the final signal.
+ * unified trading decision. Uses LIVE performance weighting
+ * to favor strategies that are actually winning today.
+ *
+ * Key improvements:
+ * - Weights strategies by their actual live win rate
+ * - Ignores strategies with 0% win rate (3+ trades)
+ * - Requires stronger agreement before entering
+ * - Penalizes conflicting signals more heavily
  */
 
 import { ALL_DAY_CONFIG } from './config.js';
@@ -14,10 +20,60 @@ export class SignalAggregator {
     this.performanceTracker = performanceTracker;
     this.regimeRouter = new RegimeRouter();
     this.config = ALL_DAY_CONFIG.signals;
+
+    // Track strategy performance this session for live weighting
+    this.livePerformance = {};
+  }
+
+  /**
+   * Update live performance from strategy tracker results
+   */
+  updateLivePerformance(strategyName, won, pnl) {
+    if (!this.livePerformance[strategyName]) {
+      this.livePerformance[strategyName] = {
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        pnl: 0
+      };
+    }
+    const perf = this.livePerformance[strategyName];
+    perf.trades++;
+    if (won) perf.wins++;
+    else perf.losses++;
+    perf.pnl += pnl;
+  }
+
+  /**
+   * Get live win rate for a strategy
+   */
+  getLiveWinRate(strategyName) {
+    const perf = this.livePerformance[strategyName];
+    if (!perf || perf.trades < 2) {
+      return 0.5; // Neutral if not enough data
+    }
+    return perf.wins / perf.trades;
+  }
+
+  /**
+   * Check if strategy should be excluded (too many losses)
+   */
+  shouldExcludeStrategy(strategyName) {
+    const perf = this.livePerformance[strategyName];
+    // Exclude if 3+ trades and 0% win rate
+    if (perf && perf.trades >= 3 && perf.wins === 0) {
+      return true;
+    }
+    // Exclude if 5+ trades and < 30% win rate
+    if (perf && perf.trades >= 5 && perf.wins / perf.trades < 0.30) {
+      return true;
+    }
+    return false;
   }
 
   /**
    * Collect signals from all strategies
+   * Now excludes poorly performing strategies in real-time
    */
   collectSignals(strategies, analysisData, regime) {
     const signals = [];
@@ -28,6 +84,11 @@ export class SignalAggregator {
     for (const strategy of eligibleStrategies) {
       // Skip if strategy can't trade (cooldown)
       if (!strategy.canTrade()) continue;
+
+      // SKIP if this strategy is performing terribly today
+      if (this.shouldExcludeStrategy(strategy.name)) {
+        continue;
+      }
 
       try {
         const signal = strategy.analyze(analysisData);
@@ -40,7 +101,7 @@ export class SignalAggregator {
             regime
           );
 
-          // Get performance weight
+          // Get performance weight based on LIVE results
           const weight = this.getStrategyWeight(strategy.name);
 
           signals.push({
@@ -48,6 +109,7 @@ export class SignalAggregator {
             side: adjustedSignal.side,
             confidence: adjustedSignal.confidence,
             weight,
+            liveWinRate: this.getLiveWinRate(strategy.name),
             regimeBoost: adjustedSignal.regimeBoost || 0,
             signals: adjustedSignal.signals
           });
@@ -61,13 +123,39 @@ export class SignalAggregator {
   }
 
   /**
-   * Get strategy weight from performance tracker
+   * Get strategy weight from LIVE performance (this session)
+   * Uses actual results, not historical backtests
    */
   getStrategyWeight(strategyName) {
-    if (this.performanceTracker) {
-      return this.performanceTracker.getStrategyWeight(strategyName);
+    const perf = this.livePerformance[strategyName];
+
+    // If no live data, use default
+    if (!perf || perf.trades < 2) {
+      // But still check performanceTracker for historical data
+      if (this.performanceTracker) {
+        return this.performanceTracker.getStrategyWeight(strategyName);
+      }
+      return ALL_DAY_CONFIG.performance.defaultWeight;
     }
-    return ALL_DAY_CONFIG.performance.defaultWeight;
+
+    // Calculate weight based on LIVE win rate
+    const winRate = perf.wins / perf.trades;
+
+    // Win rate mapping:
+    // 80%+ = 2.0 weight (double)
+    // 60% = 1.5 weight
+    // 50% = 1.0 weight (neutral)
+    // 40% = 0.5 weight
+    // 30% = 0.25 weight
+    // <30% = 0.1 weight (near-ignore)
+
+    if (winRate >= 0.80) return 2.0;
+    if (winRate >= 0.70) return 1.75;
+    if (winRate >= 0.60) return 1.5;
+    if (winRate >= 0.50) return 1.0;
+    if (winRate >= 0.40) return 0.5;
+    if (winRate >= 0.30) return 0.25;
+    return 0.1;
   }
 
   /**

@@ -494,6 +494,14 @@ class AllDayTrader {
           result.pnl,
           this.lastRegime
         );
+
+        // FEED LIVE PERFORMANCE TO AGGREGATOR
+        // This updates the aggregator's live weighting
+        this.signalAggregator.updateLivePerformance(
+          result.strategyName,
+          result.won,
+          result.pnl
+        );
       }
     }
 
@@ -535,12 +543,20 @@ class AllDayTrader {
           console.log(`  Side: ${result.side}`);
           console.log(`  P/L: ${pnlColor}${formatUSD(result.pnl)}${colors.reset}`);
 
-          // Record
+          // Record to session state
           this.sessionState.recordTrade({
             strategyName: result.strategyName,
             won: result.won,
             pnl: result.pnl
           });
+
+          // FEED LIVE PERFORMANCE TO AGGREGATOR
+          // This lets aggregator weight strategies by actual results
+          this.signalAggregator.updateLivePerformance(
+            result.strategyName,
+            result.won,
+            result.pnl
+          );
 
           if (ALL_DAY_CONFIG.logging.logExits) {
             this.logger.logSignal(null, {
