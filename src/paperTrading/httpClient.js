@@ -64,9 +64,16 @@ export function fetchJson(url, options = {}) {
 
 /**
  * Fetch Binance klines
+ * @param {string} symbol - Trading pair (e.g., 'BTCUSDT')
+ * @param {string} interval - Candle interval (e.g., '1m', '5m', '1h')
+ * @param {number} limit - Number of candles to fetch
+ * @param {number} startTime - Optional start time in milliseconds
  */
-export async function fetchBinanceKlines(symbol, interval, limit) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+export async function fetchBinanceKlines(symbol, interval, limit, startTime = null) {
+  let url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  if (startTime) {
+    url += `&startTime=${startTime}`;
+  }
   const data = await fetchJson(url);
 
   return data.map(k => ({

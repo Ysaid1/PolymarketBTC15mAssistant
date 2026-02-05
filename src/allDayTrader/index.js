@@ -38,6 +38,7 @@ import { ORBStrategy } from '../paperTrading/strategies/orbStrategy.js';
 import { EMACrossoverStrategy } from '../paperTrading/strategies/emaCrossoverStrategy.js';
 import { SRFlipStrategy } from '../paperTrading/strategies/srFlipStrategy.js';
 import { LiquiditySweepStrategy } from '../paperTrading/strategies/liquiditySweepStrategy.js';
+import { CopyTraderStrategy } from '../paperTrading/strategies/copyTraderStrategy.js';
 import { CSVLogger } from '../paperTrading/csvLogger.js';
 
 // 4H Trend Context
@@ -113,23 +114,25 @@ class AllDayTrader {
 
     // Strategies - OPTIMIZED based on 1000-market backtest results
     // REMOVED: RSI (35.8% win rate), MEAN_REVERSION (46%), LIQ_SWEEP (33.3%)
-    // These strategies were significantly hurting overall performance
     this.strategies = [
       // TOP PERFORMERS (from backtest):
-      new MACDStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),     // 72.1% WR, #1
-      new MomentumStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 63.9% WR, #2
+      new MACDStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),     // 72.1% WR
+      new MomentumStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 63.9% WR
       new VolatilityBreakoutStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 86.9% WR
       new ORBStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),      // 65.2% WR
       // SOLID PERFORMERS:
       new VolumeProfileStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 78.8% WR
       new SRFlipStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),   // 62.2% WR
       new PriceActionStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 54.7% WR
-      new TrendConfirmationStrategy({ minConfidence: 0.60 }), // Higher threshold
-      new EMACrossoverStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence })
-      // REMOVED (underperforming):
-      // - RSIStrategy: 35.8% win rate - TERRIBLE
-      // - MeanReversionStrategy: 46.0% win rate - losing money
-      // - LiquiditySweepStrategy: 33.3% win rate - TERRIBLE
+      new TrendConfirmationStrategy({ minConfidence: 0.60 }),
+      new EMACrossoverStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
+      // COPY TRADER - mirrors gabagool22's positions
+      new CopyTraderStrategy({
+        minConfidence: 0.55,
+        targetWallet: '0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d',
+        targetName: 'gabagool22',
+        ourBalance: 500
+      })
     ];
 
     // Logger
@@ -259,8 +262,26 @@ class AllDayTrader {
 
         this.currentMarket = market;
         this.currentMarket.endTime = marketEndTime;
-        this.priceAtStart = this.lastPrice;
-        this.marketStartTime = Date.now();
+
+        // Calculate actual market start time (15 min before end time)
+        // and fetch the BTC price at that time
+        if (marketEndTime) {
+          const marketStartMs = marketEndTime - (15 * 60 * 1000);
+          try {
+            // Fetch the 1m candle at market start time to get accurate start price
+            const startCandles = await fetchBinanceKlines('BTCUSDT', '1m', 1, marketStartMs);
+            if (startCandles && startCandles.length > 0) {
+              this.priceAtStart = startCandles[0].open;
+            } else {
+              this.priceAtStart = this.lastPrice; // Fallback
+            }
+          } catch (e) {
+            this.priceAtStart = this.lastPrice; // Fallback on error
+          }
+        } else {
+          this.priceAtStart = this.lastPrice;
+        }
+        this.marketStartTime = marketEndTime ? marketEndTime - (15 * 60 * 1000) : Date.now();
         this.positionManager.onMarketChange();
         this.microstructure.reset();
 
@@ -500,8 +521,8 @@ class AllDayTrader {
     // 1. Check early exits on existing positions
     if (this.engine.positions.length > 0) {
       const currentSharePrices = {
-        UP: this.currentMarket?.yesPrice || 0.50,
-        DOWN: this.currentMarket?.noPrice || 0.50
+        UP: this.currentMarket?.yesPrice ?? 0.50,
+        DOWN: this.currentMarket?.noPrice ?? 0.50
       };
 
       const exitResults = this.positionManager.processExits(currentSharePrices, remainingMinutes);
@@ -562,8 +583,8 @@ class AllDayTrader {
     const htfTrend = htf.trend || 'UNKNOWN';
 
     // Market data for entries
-    const yesPrice = this.currentMarket?.yesPrice || 0.50;
-    const noPrice = this.currentMarket?.noPrice || 0.50;
+    const yesPrice = this.currentMarket?.yesPrice ?? 0.50;
+    const noPrice = this.currentMarket?.noPrice ?? 0.50;
 
     // 5. INDEPENDENT STRATEGY TRADING
     // Each strategy can trade on its own with its own $500 balance
@@ -576,8 +597,11 @@ class AllDayTrader {
       const existingPos = this.strategyTracker.getPosition(strategy.name, this.currentMarket?.id);
       if (existingPos) continue;
 
-      // Get signal from this strategy
-      const signal = strategy.analyze(analysisData);
+      // Get signal from this strategy (await for async strategies like COPY_TRADER)
+      let signal = strategy.analyze(analysisData);
+      if (signal && typeof signal.then === 'function') {
+        signal = await signal; // Handle async strategies
+      }
 
       if (signal && signal.side && signal.confidence >= ALL_DAY_CONFIG.signals.minConfidence) {
         // Calculate entry price based on side
@@ -627,7 +651,6 @@ class AllDayTrader {
       if (!existingAggPos) {
         const contractPrice = aggregatedSignal.side === 'UP' ? yesPrice : noPrice;
 
-        // PRICE GUARD: Skip trades at extreme prices (no edge possible)
         if (contractPrice <= 0.85 && contractPrice >= 0.15) {
           const entryPrice = Math.min(0.99, contractPrice + 0.01);
 
@@ -682,8 +705,9 @@ class AllDayTrader {
     // Get strategy positions and contract prices
     const allPositions = this.strategyTracker.getAllPositions();
     const marketPositions = allPositions.filter(p => p.marketId === this.currentMarket?.id);
-    const yesPrice = this.currentMarket?.yesPrice || 0.50;
-    const noPrice = this.currentMarket?.noPrice || 0.50;
+    // Use nullish coalescing (??) instead of || to handle 0 as a valid price
+    const yesPrice = this.currentMarket?.yesPrice ?? 0.50;
+    const noPrice = this.currentMarket?.noPrice ?? 0.50;
 
     let status = `${colors.dim}[${new Date().toLocaleTimeString()}]${colors.reset} `;
     status += `BTC: $${this.lastPrice?.toFixed(0) || '---'} | `;
