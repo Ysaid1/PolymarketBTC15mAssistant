@@ -14,7 +14,7 @@ export class PerformanceTracker {
     // Trade history per strategy
     this.strategyHistory = {};
 
-    // Initialize for all 12 strategies + aggregated
+    // Initialize for all strategies + aggregated
     const strategies = [
       // Original 5 core
       'MOMENTUM', 'MEAN_REVERSION', 'VOLATILITY_BREAKOUT', 'RSI', 'MACD',
@@ -22,6 +22,8 @@ export class PerformanceTracker {
       'TREND_CONFIRM', 'PRICE_ACTION', 'VOLUME_PROFILE',
       // 15-min specific strategies
       'ORB', 'EMA_CROSS', 'SR_FLIP', 'LIQ_SWEEP',
+      // Copy trader
+      'COPY_TRADER',
       // Aggregated
       'AGGREGATED'
     ];
