@@ -111,23 +111,25 @@ class AllDayTrader {
     this.microstructure = new MicrostructureAnalyzer();
     this.htfContext = new HigherTimeframeContext();
 
-    // Strategies - 12 total for comprehensive signal aggregation
+    // Strategies - OPTIMIZED based on 1000-market backtest results
+    // REMOVED: RSI (35.8% win rate), MEAN_REVERSION (46%), LIQ_SWEEP (33.3%)
+    // These strategies were significantly hurting overall performance
     this.strategies = [
-      // Original 5 core strategies
-      new MomentumStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new MeanReversionStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new VolatilityBreakoutStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new RSIStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new MACDStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      // Pattern-based strategies
+      // TOP PERFORMERS (from backtest):
+      new MACDStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),     // 72.1% WR, #1
+      new MomentumStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 63.9% WR, #2
+      new VolatilityBreakoutStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 86.9% WR
+      new ORBStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),      // 65.2% WR
+      // SOLID PERFORMERS:
+      new VolumeProfileStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 78.8% WR
+      new SRFlipStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),   // 62.2% WR
+      new PriceActionStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }), // 54.7% WR
       new TrendConfirmationStrategy({ minConfidence: 0.60 }), // Higher threshold
-      new PriceActionStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new VolumeProfileStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      // New 15-min specific strategies
-      new ORBStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new EMACrossoverStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new SRFlipStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence }),
-      new LiquiditySweepStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence })
+      new EMACrossoverStrategy({ minConfidence: ALL_DAY_CONFIG.signals.minConfidence })
+      // REMOVED (underperforming):
+      // - RSIStrategy: 35.8% win rate - TERRIBLE
+      // - MeanReversionStrategy: 46.0% win rate - losing money
+      // - LiquiditySweepStrategy: 33.3% win rate - TERRIBLE
     ];
 
     // Logger

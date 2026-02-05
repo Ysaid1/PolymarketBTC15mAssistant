@@ -44,30 +44,39 @@ export const ALL_DAY_CONFIG = {
   // ============================================
   // REGIME-STRATEGY ROUTING
   // ============================================
+  // DISABLED STRATEGIES (based on backtest results):
+  // - RSI: 29.7% win rate - significantly worse than random
+  // - MEAN_REVERSION: 44.1% win rate - losing money
+  // - LIQ_SWEEP: 33.3% win rate - also underperforming
+  // ============================================
   regimeRouting: {
     TREND_UP: {
       enabled: ['MOMENTUM', 'MACD', 'VOLATILITY_BREAKOUT', 'TREND_CONFIRM', 'VOLUME_PROFILE', 'EMA_CROSS', 'ORB'],
-      disabled: ['MEAN_REVERSION', 'LIQ_SWEEP'],
-      confidenceBoost: { MOMENTUM: 0.05, TREND_CONFIRM: 0.05, EMA_CROSS: 0.05 },
+      disabled: ['MEAN_REVERSION', 'LIQ_SWEEP', 'RSI'],
+      confidenceBoost: { MOMENTUM: 0.05, MACD: 0.05, TREND_CONFIRM: 0.05, EMA_CROSS: 0.05 },
       sizeMultiplier: 1.0
     },
     TREND_DOWN: {
       enabled: ['MOMENTUM', 'MACD', 'VOLATILITY_BREAKOUT', 'TREND_CONFIRM', 'VOLUME_PROFILE', 'EMA_CROSS', 'ORB'],
-      disabled: ['MEAN_REVERSION', 'LIQ_SWEEP'],
-      confidenceBoost: { MOMENTUM: 0.05, TREND_CONFIRM: 0.05, EMA_CROSS: 0.05 },
+      disabled: ['MEAN_REVERSION', 'LIQ_SWEEP', 'RSI'],
+      confidenceBoost: { MOMENTUM: 0.05, MACD: 0.05, TREND_CONFIRM: 0.05, EMA_CROSS: 0.05 },
       sizeMultiplier: 1.0
     },
     RANGE: {
-      enabled: ['MEAN_REVERSION', 'RSI', 'MACD', 'PRICE_ACTION', 'VOLUME_PROFILE', 'SR_FLIP', 'LIQ_SWEEP'],
-      disabled: ['MOMENTUM', 'TREND_CONFIRM', 'EMA_CROSS'],
-      confidenceBoost: { MEAN_REVERSION: 0.05, PRICE_ACTION: 0.03, SR_FLIP: 0.05, LIQ_SWEEP: 0.05 },
+      // Removed RSI and MEAN_REVERSION - they were killing performance
+      // Added MOMENTUM back in - it performs well even in RANGE (65% win rate)
+      enabled: ['MACD', 'MOMENTUM', 'PRICE_ACTION', 'VOLUME_PROFILE', 'SR_FLIP', 'ORB'],
+      disabled: ['MEAN_REVERSION', 'RSI', 'LIQ_SWEEP', 'TREND_CONFIRM', 'EMA_CROSS'],
+      confidenceBoost: { MACD: 0.05, MOMENTUM: 0.03, PRICE_ACTION: 0.03, SR_FLIP: 0.03 },
       sizeMultiplier: 1.0
     },
     CHOP: {
-      enabled: ['RSI', 'PRICE_ACTION', 'LIQ_SWEEP'],
-      disabled: ['MOMENTUM', 'VOLATILITY_BREAKOUT', 'MEAN_REVERSION', 'TREND_CONFIRM', 'EMA_CROSS', 'ORB'],
-      confidenceBoost: { LIQ_SWEEP: 0.03 },
-      sizeMultiplier: 0.5 // Reduce size in choppy markets
+      // Reduced strategies in CHOP - aggregator had only 33.3% win rate
+      // Only use highest confidence strategies with reduced size
+      enabled: ['MACD', 'PRICE_ACTION', 'VOLATILITY_BREAKOUT'],
+      disabled: ['MOMENTUM', 'RSI', 'MEAN_REVERSION', 'TREND_CONFIRM', 'EMA_CROSS', 'ORB', 'LIQ_SWEEP'],
+      confidenceBoost: { MACD: 0.03 },
+      sizeMultiplier: 0.3 // Further reduce size in choppy markets (was 0.5)
     }
   },
 

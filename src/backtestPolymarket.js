@@ -396,8 +396,8 @@ async function runBacktest(options = {}) {
   console.log(`  DOWN: ${downMarkets} (${(downMarkets / markets.length * 100).toFixed(1)}%)`);
   console.log(`  Total: ${markets.length} markets`);
 
-  // Initialize strategies
-  const strategies = [
+  // Initialize ALL strategies (for individual testing)
+  const allStrategies = [
     new MomentumStrategy({ minConfidence, cooldownMs: 0 }),
     new MeanReversionStrategy({ minConfidence, cooldownMs: 0 }),
     new VolatilityBreakoutStrategy({ minConfidence, cooldownMs: 0 }),
@@ -412,19 +412,37 @@ async function runBacktest(options = {}) {
     new LiquiditySweepStrategy({ minConfidence, cooldownMs: 0 })
   ];
 
-  // Initialize signal aggregator
+  // OPTIMIZED strategies (exclude RSI, MEAN_REVERSION, LIQ_SWEEP based on backtest)
+  const optimizedStrategies = [
+    new MomentumStrategy({ minConfidence, cooldownMs: 0 }),
+    new VolatilityBreakoutStrategy({ minConfidence, cooldownMs: 0 }),
+    new MACDStrategy({ minConfidence, cooldownMs: 0 }),
+    new TrendConfirmationStrategy({ minConfidence: 0.60, cooldownMs: 0 }),
+    new PriceActionStrategy({ minConfidence, cooldownMs: 0 }),
+    new VolumeProfileStrategy({ minConfidence, cooldownMs: 0 }),
+    new ORBStrategy({ minConfidence, cooldownMs: 0 }),
+    new EMACrossoverStrategy({ minConfidence, cooldownMs: 0 }),
+    new SRFlipStrategy({ minConfidence, cooldownMs: 0 })
+  ];
+
+  // Initialize signal aggregators
   const performanceTracker = new PerformanceTracker();
   const signalAggregator = new SignalAggregator(performanceTracker);
 
+  const performanceTrackerV2 = new PerformanceTracker();
+  const signalAggregatorV2 = new SignalAggregator(performanceTrackerV2);
+
   // Strategy state trackers
   const strategyStates = {};
-  for (const s of strategies) {
+  for (const s of allStrategies) {
     strategyStates[s.name] = new StrategyBacktestState(s.name);
   }
-  strategyStates['AGGREGATED'] = new StrategyBacktestState('AGGREGATED');
+  strategyStates['AGGREGATED_OLD'] = new StrategyBacktestState('AGGREGATED_OLD');
+  strategyStates['AGGREGATED_V2'] = new StrategyBacktestState('AGGREGATED_V2');
 
   console.log(`\n${colors.cyan}Running backtest...${colors.reset}`);
-  console.log(`Strategies: ${strategies.length} + AGGREGATED`);
+  console.log(`All Strategies: ${allStrategies.length}`);
+  console.log(`Optimized Strategies (V2): ${optimizedStrategies.length} (excludes RSI, MEAN_REVERSION, LIQ_SWEEP)`);
   console.log(`Bet Size: $${betSize}`);
   console.log(`Entry: Minute ${entryMinute} of window`);
   console.log(`Min Confidence: ${(minConfidence * 100).toFixed(0)}%`);
@@ -471,8 +489,8 @@ async function runBacktest(options = {}) {
       remainingMinutes: 15 - entryMinute
     };
 
-    // Test each strategy
-    for (const strategy of strategies) {
+    // Test each strategy individually
+    for (const strategy of allStrategies) {
       // Set simulated time for cooldown handling
       if (strategy.setSimulatedTime) {
         strategy.setSimulatedTime(entryTime);
@@ -505,25 +523,49 @@ async function runBacktest(options = {}) {
       }
     }
 
-    // Test aggregated signal
-    const aggregated = signalAggregator.aggregate(strategies, analysisData, indicators.regime);
+    // Test OLD aggregated signal (all strategies)
+    const aggregatedOld = signalAggregator.aggregate(allStrategies, analysisData, indicators.regime);
 
-    if (aggregated.action === 'ENTER') {
-      const won = aggregated.side === market.outcome;
+    if (aggregatedOld.action === 'ENTER') {
+      const won = aggregatedOld.side === market.outcome;
       const contractPrice = 0.50;
       const profit = won ? betSize * (1 / contractPrice - 1) : 0;
       const loss = won ? 0 : betSize;
 
-      strategyStates['AGGREGATED'].recordTrade({
+      strategyStates['AGGREGATED_OLD'].recordTrade({
         marketId: market.id,
-        side: aggregated.side,
+        side: aggregatedOld.side,
         outcome: market.outcome,
-        confidence: aggregated.confidence,
+        confidence: aggregatedOld.confidence,
         won,
         profit,
         loss,
         regime: indicators.regime
       });
+    }
+
+    // Test NEW V2 aggregated signal (optimized strategies only)
+    const aggregatedV2 = signalAggregatorV2.aggregate(optimizedStrategies, analysisData, indicators.regime);
+
+    if (aggregatedV2.action === 'ENTER') {
+      const won = aggregatedV2.side === market.outcome;
+      const contractPrice = 0.50;
+      const profit = won ? betSize * (1 / contractPrice - 1) : 0;
+      const loss = won ? 0 : betSize;
+
+      strategyStates['AGGREGATED_V2'].recordTrade({
+        marketId: market.id,
+        side: aggregatedV2.side,
+        outcome: market.outcome,
+        confidence: aggregatedV2.confidence,
+        won,
+        profit,
+        loss,
+        regime: indicators.regime
+      });
+
+      // Record for V2 performance tracker
+      performanceTrackerV2.recordOutcome('AGGREGATED_V2', won, won ? profit : -loss, indicators.regime);
     }
 
     // Progress update
