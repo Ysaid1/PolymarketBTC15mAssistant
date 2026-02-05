@@ -1,13 +1,15 @@
 /**
- * Momentum/Trend Following Strategy
+ * Momentum/Trend Following Strategy (FIXED)
  *
- * Follows the prevailing price direction using multiple moving averages
- * and trend confirmation signals.
+ * Analyzes momentum WITHIN the current 15-minute market window only.
+ * Previous version used 55+ candles of historical data which caused
+ * it to predict based on past trends that had already reversed.
  *
  * Entry criteria:
- * - Price above/below EMA cascade (8, 21, 55)
+ * - Price direction from market start (most important)
+ * - Recent candle momentum within market window
  * - VWAP slope confirms direction
- * - Recent price action shows momentum (higher highs or lower lows)
+ * - Weighted average favoring recent price action
  */
 
 import { BaseStrategy } from './baseStrategy.js';
@@ -21,12 +23,15 @@ export class MomentumStrategy extends BaseStrategy {
     });
 
     this.parameters = {
-      fastEma: options.fastEma || 8,
-      mediumEma: options.mediumEma || 21,
-      slowEma: options.slowEma || 55,
+      // Use much shorter lookbacks for 15-min markets
+      fastEma: options.fastEma || 3,
+      mediumEma: options.mediumEma || 5,
+      slowEma: options.slowEma || 8,
       minVwapSlope: options.minVwapSlope || 0.0001,
-      minMomentumBars: options.minMomentumBars || 3, // consecutive directional bars
-      minConfidence: options.minConfidence || 0.55
+      minMomentumBars: options.minMomentumBars || 2, // consecutive directional bars
+      minConfidence: options.minConfidence || 0.55,
+      // Max candles to use (15 min = ~15 1-min candles)
+      maxCandleLookback: options.maxCandleLookback || 15
     };
   }
 
@@ -90,94 +95,147 @@ export class MomentumStrategy extends BaseStrategy {
   }
 
   /**
-   * Analyze market data for momentum signals
+   * Filter candles to only those within the current market window
+   * This is CRITICAL - we only want to analyze the current 15-min period
+   */
+  filterMarketCandles(candles, remainingMinutes) {
+    // How many minutes into the market are we?
+    const elapsedMinutes = 15 - remainingMinutes;
+    // Take only the most recent candles from this market
+    // Add 1 buffer candle for EMA calculation
+    const candlesToUse = Math.min(
+      Math.ceil(elapsedMinutes) + 1,
+      this.parameters.maxCandleLookback,
+      candles.length
+    );
+    return candles.slice(-candlesToUse);
+  }
+
+  /**
+   * Calculate weighted price change - recent prices weighted more heavily
+   */
+  calculateWeightedMomentum(candles) {
+    if (candles.length < 2) return 0;
+
+    let weightedChange = 0;
+    let totalWeight = 0;
+
+    for (let i = 1; i < candles.length; i++) {
+      // More recent candles get higher weight (exponential)
+      const weight = Math.pow(1.5, i);
+      const change = (candles[i].close - candles[i - 1].close) / candles[i - 1].close;
+      weightedChange += change * weight;
+      totalWeight += weight;
+    }
+
+    return totalWeight > 0 ? weightedChange / totalWeight : 0;
+  }
+
+  /**
+   * Analyze market data for momentum signals (FIXED VERSION)
+   * Now uses only candles from the current market window
    */
   analyze(data) {
     const { candles, price, vwap, vwapSlope, remainingMinutes } = data;
 
-    if (!candles || candles.length < this.parameters.slowEma) {
+    if (!candles || candles.length < 3) {
       return null;
     }
 
-    const closes = candles.map(c => c.close);
+    // CRITICAL FIX: Only use candles from this market's timeframe
+    const marketCandles = this.filterMarketCandles(candles, remainingMinutes);
 
-    // Calculate EMAs
-    const ema8 = this.calculateEMA(closes, this.parameters.fastEma);
-    const ema21 = this.calculateEMA(closes, this.parameters.mediumEma);
-    const ema55 = this.calculateEMA(closes, this.parameters.slowEma);
+    // Need at least a few candles to analyze
+    if (marketCandles.length < 3) {
+      return null;
+    }
 
-    if (!ema8 || !ema21 || !ema55) return null;
+    const closes = marketCandles.map(c => c.close);
+
+    // Calculate short-term EMAs on market candles only
+    const emaFast = this.calculateEMA(closes, Math.min(this.parameters.fastEma, closes.length));
+    const emaMedium = this.calculateEMA(closes, Math.min(this.parameters.mediumEma, closes.length));
+    const emaSlow = this.calculateEMA(closes, Math.min(this.parameters.slowEma, closes.length));
 
     const signals = {
-      ema8, ema21, ema55,
+      emaFast, emaMedium, emaSlow,
       price,
       vwap,
-      vwapSlope
+      vwapSlope,
+      candlesUsed: marketCandles.length
     };
 
     // Determine trend direction
     let upScore = 0;
     let downScore = 0;
 
-    // EMA Cascade check (most important)
-    if (price > ema8 && ema8 > ema21 && ema21 > ema55) {
-      upScore += 3;
-      signals.emaCascade = 'BULLISH';
-    } else if (price < ema8 && ema8 < ema21 && ema21 < ema55) {
-      downScore += 3;
-      signals.emaCascade = 'BEARISH';
+    // 1. MOST IMPORTANT: Price change from first candle of market
+    const marketStartPrice = marketCandles[0].open;
+    const priceChangePercent = ((price - marketStartPrice) / marketStartPrice) * 100;
+    signals.priceChangeFromStart = priceChangePercent.toFixed(3) + '%';
+
+    if (priceChangePercent > 0.05) {
+      upScore += 4; // Strong weight for actual price direction
+      signals.priceDirection = 'UP';
+    } else if (priceChangePercent < -0.05) {
+      downScore += 4;
+      signals.priceDirection = 'DOWN';
     } else {
-      signals.emaCascade = 'MIXED';
+      signals.priceDirection = 'FLAT';
     }
 
-    // Price position relative to EMAs
-    if (price > ema8) upScore += 1;
-    else downScore += 1;
+    // 2. Weighted momentum (recent candles matter more)
+    const weightedMomentum = this.calculateWeightedMomentum(marketCandles);
+    signals.weightedMomentum = (weightedMomentum * 100).toFixed(4) + '%';
 
-    if (price > ema21) upScore += 1;
-    else downScore += 1;
-
-    if (price > ema55) upScore += 1;
-    else downScore += 1;
-
-    // VWAP slope confirmation
-    if (vwapSlope > this.parameters.minVwapSlope) {
+    if (weightedMomentum > 0.0001) {
       upScore += 2;
+    } else if (weightedMomentum < -0.0001) {
+      downScore += 2;
+    }
+
+    // 3. EMA position (using short-term EMAs)
+    if (emaFast && emaMedium && emaSlow) {
+      if (price > emaFast && emaFast > emaMedium) {
+        upScore += 2;
+        signals.emaTrend = 'BULLISH';
+      } else if (price < emaFast && emaFast < emaMedium) {
+        downScore += 2;
+        signals.emaTrend = 'BEARISH';
+      } else {
+        signals.emaTrend = 'MIXED';
+      }
+    }
+
+    // 4. VWAP slope confirmation
+    if (vwapSlope > this.parameters.minVwapSlope) {
+      upScore += 1;
       signals.vwapTrend = 'UP';
     } else if (vwapSlope < -this.parameters.minVwapSlope) {
-      downScore += 2;
+      downScore += 1;
       signals.vwapTrend = 'DOWN';
     } else {
       signals.vwapTrend = 'FLAT';
     }
 
-    // Momentum bar count
-    const upBars = this.countMomentumBars(candles, 'UP');
-    const downBars = this.countMomentumBars(candles, 'DOWN');
+    // 5. Consecutive momentum bars (within market candles only)
+    const upBars = this.countMomentumBars(marketCandles, 'UP');
+    const downBars = this.countMomentumBars(marketCandles, 'DOWN');
     signals.momentumBarsUp = upBars;
     signals.momentumBarsDown = downBars;
 
     if (upBars >= this.parameters.minMomentumBars) {
-      upScore += 2;
+      upScore += 1;
     }
     if (downBars >= this.parameters.minMomentumBars) {
-      downScore += 2;
-    }
-
-    // Trend pattern (higher highs / lower lows)
-    if (this.checkTrendPattern(candles, 'UP')) {
-      upScore += 1;
-      signals.trendPattern = 'HIGHER_HIGHS';
-    } else if (this.checkTrendPattern(candles, 'DOWN')) {
       downScore += 1;
-      signals.trendPattern = 'LOWER_LOWS';
     }
 
     // Calculate confidence
     const totalScore = upScore + downScore;
     if (totalScore === 0) return null;
 
-    const maxPossibleScore = 10; // 3 (cascade) + 3 (price vs emas) + 2 (vwap) + 2 (momentum) + 1 (pattern) = 11 but we need differential
+    const maxPossibleScore = 10; // 4 (price dir) + 2 (weighted) + 2 (ema) + 1 (vwap) + 1 (bars)
 
     let side, confidence;
 
@@ -191,8 +249,8 @@ export class MomentumStrategy extends BaseStrategy {
       return null; // No clear direction
     }
 
-    // Time decay adjustment
-    const timeDecay = Math.max(0.5, remainingMinutes / 15);
+    // Slight time decay - but less aggressive since we're using market-only data
+    const timeDecay = Math.max(0.7, remainingMinutes / 15);
     confidence = 0.5 + (confidence - 0.5) * timeDecay;
 
     signals.rawUpScore = upScore;
